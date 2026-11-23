@@ -24,13 +24,23 @@ def bind(plan,master,receipt):
     plan=Path(plan);snapshot=rpc.read(plan/'snapshot.json')
     rpc.archive_receipt(receipt)
     rpc.require(master['schema']==1 and master['snapshot']==snapshot['fingerprint'],'foreign input inventory')
-    rpc.require(len(master['modules'])==len(set(master['modules'])),'duplicate master module')
+    master_names=set(master['modules'])
+    rpc.require(len(master['modules'])==len(master_names),'duplicate master module')
+    workers=[];recipients={}
     for row in rpc.read(plan/'matrix.json')['include']:
         control=plan/row['id'];lease=rpc.read(control/'lease.json');request=rpc.read(control/'request-0.json')
         names=request['modules']
-        rpc.require(set(names)<=set(master['modules']),'requested module missing from inventory')
+        requested=set(names)
+        rpc.require(requested<=master_names,'requested module missing from inventory')
+        files=[]
+        workers.append((control,lease,names,files))
+        for name in requested:recipients.setdefault(name,[]).append(files)
+    # Preserve inventory order, including when requests overlap, with one traversal.
+    for entry in master['files']:
+        for files in recipients.get(entry['module'],[]):files.append(entry)
+    for control,lease,names,files in workers:
         subset={'schema':1,'snapshot':master['snapshot'],'modules':names,
-                'files':[x for x in master['files'] if x['module'] in set(names)]}
+                'files':files}
         paths={x['path'] for x in subset['files']}
         for name in names:
             stem='/'.join(name.split('.'))
@@ -41,7 +51,7 @@ def bind(plan,master,receipt):
         lease['input_manifest_sha256']=rpc.digest(control/'input-manifest.json')
         lease['worker']['archive_receipt_sha256']=rpc.digest(control/'verified-archive.json')
         rpc.atomic(control/'lease.json',lease)
-    return {'workers':len(rpc.read(plan/'matrix.json')['include']),'proof_elaboration':False}
+    return {'workers':len(workers),'proof_elaboration':False}
 
 def main():
     p=argparse.ArgumentParser();sub=p.add_subparsers(dest='mode',required=True)

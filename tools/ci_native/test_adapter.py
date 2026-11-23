@@ -48,6 +48,32 @@ class AdapterTests(unittest.TestCase):
   self.assertEqual(len(seen),7);self.assertEqual(len(set(seen)),7)
  def test_prepare_refuses_unapproved_registry(self):
   with self.assertRaises(ValueError):prepare.prepare({},[],self.base/'out','1',1,'b'*40,'c'*64)
+ def test_bind_preserves_inventory_order_for_overlapping_requests(self):
+  out,matrix=self.planned(2,4);_,master=self.flat([f'Fixture.M{i}'for i in range(4)])
+  master['files'].reverse()
+  requests=[['Fixture.M0','Fixture.M2'],['Fixture.M2','Fixture.M1']]
+  for row,names in zip(matrix['include'],requests):
+   path=out/row['id']/'request-0.json';request=rpc.read(path);request['modules']=names;rpc.atomic(path,request)
+  self.assertEqual(flat_inputs.bind(out,master,receipt()),{'workers':2,'proof_elaboration':False})
+  for row,names,last in zip(matrix['include'],requests,['Fixture.M0','Fixture.M1']):
+   control=out/row['id'];manifest=rpc.read(control/'input-manifest.json')
+   self.assertEqual(manifest['modules'],names)
+   self.assertEqual([x['module'] for x in manifest['files']],['Fixture.M2']*8+[last]*8)
+   self.assertEqual([Path(x['path']).suffixes for x in manifest['files'][:8]],
+                    [Path('M2'+suffix).suffixes for suffix in reversed(flat_inputs.PARTS)])
+   self.assertEqual(rpc.read(control/'lease.json')['input_manifest_sha256'],rpc.digest(control/'input-manifest.json'))
+ def test_bind_traverses_inventory_once_for_multiple_workers(self):
+  out,_=self.planned(3,7);_,master=self.flat([f'Fixture.M{i}'for i in range(7)])
+  class Once(list):
+   def __iter__(self):
+    if getattr(self,'visited',False):raise AssertionError('inventory traversed more than once')
+    self.visited=True;return super().__iter__()
+  master['files']=Once(master['files'])
+  self.assertEqual(flat_inputs.bind(out,master,receipt())['workers'],3)
+ def test_bind_still_rejects_incomplete_worker_inputs(self):
+  out,_=self.planned(2,2);_,master=self.flat(['Fixture.M0','Fixture.M1'])
+  master['files'].pop()
+  with self.assertRaisesRegex(ValueError,'incomplete eight-part input'):flat_inputs.bind(out,master,receipt())
  def test_effective_own_unit_cgroup_not_host_root(self):
   unit=Path('/sys/fs/cgroup/user.slice/unit.service')
   def text(p):
